@@ -1,7 +1,8 @@
 apps/
 bin/
 build/
-cmake/
+cmake/*
+!cmake/MatrixDefaults.cmake
 **/obj/*
 **/Debug/*
 **/Release/*
