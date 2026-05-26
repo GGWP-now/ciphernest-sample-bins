@@ -28,6 +28,7 @@ run_kbuild() {
     log="$work/kbuild.log"
     if make -C "$kbuild" M="$work" "$@" modules >"$log" 2>&1; then
         sed \
+            -e '/WARNING: Module\.symvers is missing\./d' \
             -e '/You may get many unresolved symbol errors\./d' \
             -e '/You can set KBUILD_MODPOST_WARN=1 to turn errors into warning/d' \
             -e '/Skipping BTF generation for .* due to unavailability of vmlinux/d' \
@@ -41,7 +42,7 @@ run_kbuild() {
 if [ -f "$kbuild/Module.symvers" ]; then
     run_kbuild
 else
-    echo "WARN: $kbuild/Module.symvers is missing; building with KBUILD_MODPOST_WARN=1."
+    echo "WARN: $kbuild/Module.symvers unavailable; building with KBUILD_MODPOST_WARN=1."
     run_kbuild KBUILD_MODPOST_WARN=1
 fi
 find "$work" -maxdepth 1 -name '*.ko' -exec cp {} "$out"/ \;

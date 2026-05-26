@@ -151,6 +151,23 @@ function Remove-BuildDirectorySafely {
     Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
 }
 
+function Remove-OutputDirectorySafely {
+    param([string]$OutputPath)
+
+    if (-not (Test-Path -LiteralPath $OutputPath)) {
+        return
+    }
+
+    $resolvedTarget = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $OutputPath).Path).TrimEnd('\')
+    $outputRoot = if ([string]::IsNullOrWhiteSpace($OutDir)) { Join-Path $script:Root 'bin' } else { $OutDir }
+    $resolvedOutputRoot = [System.IO.Path]::GetFullPath($outputRoot).TrimEnd('\')
+    if (-not $resolvedTarget.StartsWith($resolvedOutputRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove output directory outside configured output root: $resolvedTarget"
+    }
+
+    Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+}
+
 $DefaultLlvmProjectDir = if ([string]::IsNullOrWhiteSpace($env:LLVM_PROJECT_DIR)) { 'D:\llvm-lit\llvm-project' } else { $env:LLVM_PROJECT_DIR }
 $DefaultLlvmBuildDir   = if ([string]::IsNullOrWhiteSpace($env:LLVM_BUILD_DIR)) { Join-Path $DefaultLlvmProjectDir 'build\Release' } else { $env:LLVM_BUILD_DIR }
 $DefaultPythonX86Root  = if ([string]::IsNullOrWhiteSpace($env:PYTHON_X86_ROOT)) { 'C:\Python310-32' } else { $env:PYTHON_X86_ROOT }
@@ -1491,6 +1508,7 @@ function Build-PlatformTarget {
  $srcDir = Join-Path $script:Root $TargetDir
  $outSub = Join-Path $OutDir $Config.Name
  $hostPlatform = Get-HostPlatformName
+ $linuxCcArg = if ($Config.Arch -eq 'x86') { 'CC=cc -m32' } else { 'CC=cc -m64' }
 
  New-Item -ItemType Directory -Force -Path $outSub | Out-Null
 
@@ -1499,6 +1517,9 @@ function Build-PlatformTarget {
  switch ($TargetId) {
      '37' {
          $targetOut = Join-Path $outSub 'linux_shared_library'
+         if ($Clean -and (Test-Path -LiteralPath $targetOut)) {
+             Remove-OutputDirectorySafely -OutputPath $targetOut
+         }
          if ($hostPlatform -eq 'windows') {
              if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
                  Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
@@ -1509,7 +1530,7 @@ function Build-PlatformTarget {
              }
              $wslSrc = ConvertTo-WslPath -Path $srcDir
              $wslOut = ConvertTo-WslPath -Path $targetOut
-             $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", 'all')
+             $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", $linuxCcArg, 'all')
              $result = $captured.Output
              $exitCode = $captured.ExitCode
          }
@@ -1521,7 +1542,7 @@ function Build-PlatformTarget {
              return $true
          }
          else {
-             $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
+             $result = & make -C $srcDir "OUT=$targetOut" $linuxCcArg all 2>&1
              $exitCode = $LASTEXITCODE
          }
      }
@@ -1538,6 +1559,9 @@ function Build-PlatformTarget {
      }
      '39' {
          $targetOut = Join-Path $outSub 'linux_cli_app'
+         if ($Clean -and (Test-Path -LiteralPath $targetOut)) {
+             Remove-OutputDirectorySafely -OutputPath $targetOut
+         }
          if ($hostPlatform -eq 'windows') {
              if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
                  Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
@@ -1548,7 +1572,7 @@ function Build-PlatformTarget {
              }
              $wslSrc = ConvertTo-WslPath -Path $srcDir
              $wslOut = ConvertTo-WslPath -Path $targetOut
-             $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", 'all')
+             $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", $linuxCcArg, 'all')
              $result = $captured.Output
              $exitCode = $captured.ExitCode
          }
@@ -1560,7 +1584,7 @@ function Build-PlatformTarget {
              return $true
          }
          else {
-             $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
+             $result = & make -C $srcDir "OUT=$targetOut" $linuxCcArg all 2>&1
              $exitCode = $LASTEXITCODE
          }
      }

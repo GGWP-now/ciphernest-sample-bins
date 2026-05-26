@@ -16,7 +16,14 @@ build_with() {
     exe="$out/$name"
     echo "BUILD: $name"
     if "$@" -O2 -Wall -Wextra -o "$exe" "$src"; then
-        "$exe" "$name" || true
+        case "$name" in
+            linux_x64|linux_x86)
+                "$exe" "$name" || true
+                ;;
+            *)
+                echo "OK: built $name"
+                ;;
+        esac
     else
         echo "SKIP: $name compiler/linker path is unavailable."
         rm -f "$exe"
