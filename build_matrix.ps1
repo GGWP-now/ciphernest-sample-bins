@@ -152,6 +152,11 @@ function Remove-BuildDirectorySafely {
 }
 
 $DefaultLlvmProjectDir = if ([string]::IsNullOrWhiteSpace($env:LLVM_PROJECT_DIR)) { 'D:\llvm-lit\llvm-project' } else { $env:LLVM_PROJECT_DIR }
+$DefaultLlvmBuildDir   = if ([string]::IsNullOrWhiteSpace($env:LLVM_BUILD_DIR)) { Join-Path $DefaultLlvmProjectDir 'build\Release' } else { $env:LLVM_BUILD_DIR }
+$DefaultPythonX86Root  = if ([string]::IsNullOrWhiteSpace($env:PYTHON_X86_ROOT)) { 'C:\Python310-32' } else { $env:PYTHON_X86_ROOT }
+$DefaultNodeX86Root    = if ([string]::IsNullOrWhiteSpace($env:NODE_X86_ROOT)) { 'C:\node-v22.22.3-win-x86' } else { $env:NODE_X86_ROOT }
+$DefaultJavaX86Root    = if ([string]::IsNullOrWhiteSpace($env:JAVA_X86_HOME)) { 'C:\Program Files (x86)\Java\latest\jre-1.8' } else { $env:JAVA_X86_HOME }
+$DefaultPatchBin       = if ([string]::IsNullOrWhiteSpace($env:PATCH_BIN)) { 'C:\Program Files\Git\usr\bin' } else { $env:PATCH_BIN }
 $DefaultCygwinRoot     = if ([string]::IsNullOrWhiteSpace($env:CYGWIN_ROOT)) { 'D:\cygwin' } else { $env:CYGWIN_ROOT }
 $GccBinCandidates      = @(
     $env:GCC_BIN,
@@ -442,6 +447,44 @@ function Ensure-VSEnv {
         Import-VSEnv -Arch $Arch
         $script:CurrentVsArch = $Arch
     }
+}
+
+function Get-CommandPathOrDefault {
+    param(
+        [string]$CommandName,
+        [string]$DefaultPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($DefaultPath) -and (Test-Path -LiteralPath $DefaultPath)) {
+        return $DefaultPath
+    }
+
+    $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    return ''
+}
+
+function Get-JavaHomeForArch {
+    param([string]$Arch)
+
+    if ($Arch -eq 'x86') {
+        $candidates = @(
+            $DefaultJavaX86Root,
+            'C:\Program Files (x86)\Java\latest\jre-1.8',
+            'C:\Program Files (x86)\Java\jre1.8.0_471'
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) {
+                return $candidate
+            }
+        }
+    }
+
+    return ''
 }
 
 function Get-ConfigToolchain {
@@ -762,14 +805,6 @@ function Build-MSBuildTarget {
     $srcDir   = Join-Path $script:Root $TargetDir
     $outBase  = Join-Path $OutDir $Config.Name
 
-    # WinUI template only supports x64; skip x86 builds.
-    if ($Config.Arch -eq 'x86') {
-        Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
-        Write-Host "  TARGET: $TargetId ($TargetDir) [MSBuild vcxproj]" -ForegroundColor Yellow
-        Write-Host "  CONFIG: $($Config.Name)  |  SKIP (x86 unsupported)" -ForegroundColor DarkYellow
-        Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-        return $true
-    }
     $outSub   = Join-Path $outBase 'WinUIApp'
 
     $vsCfg   = if ($Config.Name -like '*Debug*') { 'Debug' } else { 'Release' }
@@ -793,8 +828,8 @@ function Build-MSBuildTarget {
     Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
 
     # Clean first if requested
-    if ($Clean -and (Test-Path "$srcDir\x64")) {
-        Remove-Item -Recurse -Force "$srcDir\x64" -ErrorAction SilentlyContinue
+    if ($Clean -and (Test-Path (Join-Path $srcDir $arch))) {
+        Remove-Item -Recurse -Force (Join-Path $srcDir $arch) -ErrorAction SilentlyContinue
     }
     Remove-Item -Recurse -Force "$srcDir\obj" -ErrorAction SilentlyContinue
 
@@ -811,7 +846,7 @@ function Build-MSBuildTarget {
     }
 
     # Copy outputs to the matrix bin directory
-    $buildOut = Join-Path $srcDir "x64\$vsCfg\WinUIApp"
+    $buildOut = Join-Path $srcDir "$arch\$vsCfg\WinUIApp"
     if (Test-Path $buildOut) {
         Copy-Item -Path "$buildOut\*" -Destination $outSub -Recurse -Force
     }
@@ -1023,19 +1058,15 @@ function Build-GuiAppTarget {
 
  switch ($TargetId) {
      '29' {
-         $python = Get-Command python -ErrorAction SilentlyContinue
-         $pyinstaller = Get-Command pyinstaller -ErrorAction SilentlyContinue
-         if (-not $python -or -not $pyinstaller) {
-             Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
-             Write-Host "  TARGET: $TargetId ($TargetDir) [Python/Tkinter]" -ForegroundColor Yellow
-             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (python or pyinstaller not installed)" -ForegroundColor DarkYellow
-             Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-             return $true
+         $pythonExe = if ($arch -eq 'x86') {
+             Join-Path $DefaultPythonX86Root 'python.exe'
+         } else {
+             Get-CommandPathOrDefault -CommandName 'python.exe' -DefaultPath ''
          }
-         if ($arch -eq 'x86' -and [Environment]::Is64BitProcess) {
+         if ([string]::IsNullOrWhiteSpace($pythonExe) -or -not (Test-Path -LiteralPath $pythonExe)) {
              Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
              Write-Host "  TARGET: $TargetId ($TargetDir) [Python/Tkinter]" -ForegroundColor Yellow
-             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (64-bit Python cannot emit x86 exe)" -ForegroundColor DarkYellow
+             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (python not installed for $arch)" -ForegroundColor DarkYellow
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
@@ -1043,52 +1074,119 @@ function Build-GuiAppTarget {
          Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
          Write-Host "  TARGET: $TargetId ($TargetDir) [Python/Tkinter]" -ForegroundColor Yellow
          Write-Host "  CONFIG: $($Config.Name)  |  ARCH: $arch" -ForegroundColor Yellow
+         Write-Host "  PYTHON: $pythonExe" -ForegroundColor DarkYellow
          Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-         if ($Clean -and (Test-Path $workDir)) { Remove-Item -Recurse -Force $workDir }
+         if ($Clean -and (Test-Path $workDir)) { Remove-BuildDirectorySafely -BuildDir $workDir }
          $mainPy = Join-Path $srcDir 'main.py'
-         $result = cmd /c "pyinstaller --noconfirm --clean --onefile --windowed --name python_tkinter_app --distpath `"$outSub`" --workpath `"$workDir`" --specpath `"$workDir`" `"$mainPy`" 2>&1"
-         if ($LASTEXITCODE -ne 0) {
+         $pyArgs = @(
+             '-m', 'PyInstaller',
+             '--noconfirm',
+             '--clean',
+             '--onefile',
+             '--windowed',
+             '--name', 'python_tkinter_app',
+             '--distpath', $outSub,
+             '--workpath', $workDir,
+             '--specpath', $workDir,
+             $mainPy
+         )
+         $captured = Invoke-NativeCaptured -FilePath $pythonExe -ArgumentList $pyArgs
+         $result = $captured.Output
+         if ($captured.ExitCode -ne 0) {
              Write-Host "  [FAIL] pyinstaller" -ForegroundColor Red
              Write-Host ($result -join "`n")
              return $false
          }
      }
      '30' {
-         $node = Get-Command node -ErrorAction SilentlyContinue
-         $npm = Get-Command npm -ErrorAction SilentlyContinue
-         if (-not $node -or -not $npm) {
+         $nodeBin = if ($arch -eq 'x86') { $DefaultNodeX86Root } else { '' }
+         $nodeExe = if ($arch -eq 'x86') { Join-Path $nodeBin 'node.exe' } else { Get-CommandPathOrDefault -CommandName 'node.exe' -DefaultPath '' }
+         $npmExe = if ($arch -eq 'x86') { Join-Path $nodeBin 'npm.cmd' } else { Get-CommandPathOrDefault -CommandName 'npm.cmd' -DefaultPath '' }
+         $npxExe = if ($arch -eq 'x86') { Join-Path $nodeBin 'npx.cmd' } else { Get-CommandPathOrDefault -CommandName 'npx.cmd' -DefaultPath '' }
+         if ([string]::IsNullOrWhiteSpace($nodeExe) -or [string]::IsNullOrWhiteSpace($npmExe) -or [string]::IsNullOrWhiteSpace($npxExe) -or
+             -not (Test-Path -LiteralPath $nodeExe) -or -not (Test-Path -LiteralPath $npmExe) -or -not (Test-Path -LiteralPath $npxExe)) {
              Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
              Write-Host "  TARGET: $TargetId ($TargetDir) [Node.js/pkg]" -ForegroundColor Yellow
              Write-Host "  CONFIG: $($Config.Name)  |  SKIP (node or npm not installed)" -ForegroundColor DarkYellow
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
-         if ($arch -eq 'x86') {
-             Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
-             Write-Host "  TARGET: $TargetId ($TargetDir) [Node.js/pkg]" -ForegroundColor Yellow
-             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (pkg has no cached Node 18 win-x86 base binary)" -ForegroundColor DarkYellow
-             Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-             return $true
-         }
-         $pkgTarget = if ($arch -eq 'x86') { 'node18-win-x86' } else { 'node18-win-x64' }
+         $pkgTarget = if ($arch -eq 'x86') { 'node22-win-x86 SEA' } else { 'node18-win-x64' }
          $outFile = Join-Path $outSub 'nodejs_gui_app.exe'
          Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
          Write-Host "  TARGET: $TargetId ($TargetDir) [Node.js/pkg]" -ForegroundColor Yellow
          Write-Host "  CONFIG: $($Config.Name)  |  TARGET: $pkgTarget" -ForegroundColor Yellow
+         Write-Host "  NODE:   $nodeExe" -ForegroundColor DarkYellow
          Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-         if (-not (Test-Path (Join-Path $srcDir 'node_modules'))) {
-             $install = cmd /c "cd /d `"$srcDir`" && npm install --silent" 2>&1
-             if ($LASTEXITCODE -ne 0) {
-                 Write-Host "  [FAIL] npm install" -ForegroundColor Red
-                 Write-Host ($install -join "`n")
-                 return $false
+         $oldPath = $env:PATH
+         try {
+             $pathPrefixes = @($nodeBin)
+             if (Test-Path -LiteralPath (Join-Path $DefaultPatchBin 'patch.exe')) {
+                 $pathPrefixes += $DefaultPatchBin
+             }
+             $pathPrefixes = $pathPrefixes | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+             if ($pathPrefixes) {
+                 $env:PATH = (($pathPrefixes + @($env:PATH)) -join ';')
+             }
+             Push-Location $srcDir
+             try {
+                 if ($arch -eq 'x86') {
+                     $seaWorkDir = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_node_sea"
+                     if ($Clean -and (Test-Path -LiteralPath $seaWorkDir)) {
+                         Remove-BuildDirectorySafely -BuildDir $seaWorkDir
+                     }
+                     New-Item -ItemType Directory -Force -Path $seaWorkDir | Out-Null
+
+                     $seaBlob = Join-Path $seaWorkDir 'sea-prep.blob'
+                     $seaConfig = Join-Path $seaWorkDir 'sea-config.json'
+                     [pscustomobject]@{
+                         main = Join-Path $srcDir 'main.js'
+                         output = $seaBlob
+                         disableExperimentalSEAWarning = $true
+                     } | ConvertTo-Json | Set-Content -LiteralPath $seaConfig -Encoding ASCII
+
+                     $captured = Invoke-NativeCaptured -FilePath $nodeExe -ArgumentList @('--experimental-sea-config', $seaConfig) -WorkingDirectory $srcDir
+                     $result = $captured.Output
+                     if ($captured.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $seaBlob)) {
+                         Write-Host "  [FAIL] node SEA blob" -ForegroundColor Red
+                         Write-Host ($result -join "`n")
+                         return $false
+                     }
+
+                     Copy-Item -LiteralPath $nodeExe -Destination $outFile -Force
+                     $captured = Invoke-NativeCaptured -FilePath $npxExe -ArgumentList @('--yes', 'postject', $outFile, 'NODE_SEA_BLOB', $seaBlob, '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2', '--overwrite') -WorkingDirectory $srcDir
+                     $result = $captured.Output
+                     if ($captured.ExitCode -ne 0) {
+                         Write-Host "  [FAIL] node SEA inject" -ForegroundColor Red
+                         Write-Host ($result -join "`n")
+                         return $false
+                     }
+                 }
+                 else {
+                     if (-not (Test-Path (Join-Path $srcDir 'node_modules'))) {
+                         $captured = Invoke-NativeCaptured -FilePath $npmExe -ArgumentList @('install', '--silent') -WorkingDirectory $srcDir
+                         $install = $captured.Output
+                         if ($captured.ExitCode -ne 0) {
+                             Write-Host "  [FAIL] npm install" -ForegroundColor Red
+                             Write-Host ($install -join "`n")
+                             return $false
+                         }
+                     }
+                     $captured = Invoke-NativeCaptured -FilePath $npxExe -ArgumentList @('pkg', '.', '--targets', $pkgTarget, '--output', $outFile) -WorkingDirectory $srcDir
+                     $result = $captured.Output
+                     if ($captured.ExitCode -ne 0) {
+                         Write-Host "  [FAIL] pkg" -ForegroundColor Red
+                         Write-Host ($result -join "`n")
+                         return $false
+                     }
+                 }
+             }
+             finally {
+                 Pop-Location
              }
          }
-         $result = cmd /c "cd /d `"$srcDir`" && npx pkg . --targets $pkgTarget --output `"$outFile`"" 2>&1
-         if ($LASTEXITCODE -ne 0) {
-             Write-Host "  [FAIL] pkg" -ForegroundColor Red
-             Write-Host ($result -join "`n")
-             return $false
+         finally {
+             $env:PATH = $oldPath
          }
      }
      '31' {
@@ -1129,41 +1227,63 @@ function Build-GuiAppTarget {
      }
      '32' {
          $cargo = Get-Command cargo -ErrorAction SilentlyContinue
-         $node = Get-Command node -ErrorAction SilentlyContinue
-         $npm = Get-Command npm -ErrorAction SilentlyContinue
-         if (-not $cargo -or -not $node -or -not $npm) {
+         $nodeBin = if ($arch -eq 'x86') { $DefaultNodeX86Root } else { '' }
+         $nodeExe = if ($arch -eq 'x86') { Join-Path $nodeBin 'node.exe' } else { Get-CommandPathOrDefault -CommandName 'node.exe' -DefaultPath '' }
+         $npmExe = if ($arch -eq 'x86') { Join-Path $nodeBin 'npm.cmd' } else { Get-CommandPathOrDefault -CommandName 'npm.cmd' -DefaultPath '' }
+         if (-not $cargo -or [string]::IsNullOrWhiteSpace($nodeExe) -or [string]::IsNullOrWhiteSpace($npmExe) -or
+             -not (Test-Path -LiteralPath $nodeExe) -or -not (Test-Path -LiteralPath $npmExe)) {
              Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
              Write-Host "  TARGET: $TargetId ($TargetDir) [Tauri]" -ForegroundColor Yellow
              Write-Host "  CONFIG: $($Config.Name)  |  SKIP (cargo, node, or npm not installed)" -ForegroundColor DarkYellow
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
-         if ($arch -eq 'x86') {
-             Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
-             Write-Host "  TARGET: $TargetId ($TargetDir) [Tauri]" -ForegroundColor Yellow
-             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (sample is x64-only)" -ForegroundColor DarkYellow
-             Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-             return $true
-         }
+         $rustTarget = if ($arch -eq 'x86') { 'i686-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
          Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
          Write-Host "  TARGET: $TargetId ($TargetDir) [Tauri]" -ForegroundColor Yellow
-         Write-Host "  CONFIG: $($Config.Name)  |  ARCH: x64" -ForegroundColor Yellow
+         Write-Host "  CONFIG: $($Config.Name)  |  TARGET: $rustTarget" -ForegroundColor Yellow
          Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-         if (-not (Test-Path (Join-Path $srcDir 'node_modules'))) {
-             $install = cmd /c "cd /d `"$srcDir`" && npm install --silent" 2>&1
+         $installedTargets = & rustup target list --installed 2>$null
+         if ($installedTargets -notcontains $rustTarget) {
+             $rustup = & rustup target add $rustTarget 2>&1
              if ($LASTEXITCODE -ne 0) {
-                 Write-Host "  [FAIL] npm install" -ForegroundColor Red
-                 Write-Host ($install -join "`n")
+                 Write-Host "  [FAIL] rustup target add $rustTarget" -ForegroundColor Red
+                 Write-Host ($rustup -join "`n")
                  return $false
              }
          }
-         $result = cmd /c "cd /d `"$srcDir`" && npm run tauri build -- --target x86_64-pc-windows-msvc 2>&1"
-         if ($LASTEXITCODE -ne 0) {
-             Write-Host "  [FAIL] tauri build" -ForegroundColor Red
-             Write-Host ($result -join "`n")
-             return $false
+         $oldPath = $env:PATH
+         try {
+             if (-not [string]::IsNullOrWhiteSpace($nodeBin)) {
+                 $env:PATH = "$nodeBin;$env:PATH"
+             }
+             Push-Location $srcDir
+             try {
+                 if (($arch -eq 'x86') -or -not (Test-Path (Join-Path $srcDir 'node_modules'))) {
+                     $captured = Invoke-NativeCaptured -FilePath $npmExe -ArgumentList @('install', '--silent') -WorkingDirectory $srcDir
+                     $install = $captured.Output
+                     if ($captured.ExitCode -ne 0) {
+                         Write-Host "  [FAIL] npm install" -ForegroundColor Red
+                         Write-Host ($install -join "`n")
+                         return $false
+                     }
+                 }
+                 $captured = Invoke-NativeCaptured -FilePath $npmExe -ArgumentList @('run', 'tauri', 'build', '--', '--target', $rustTarget) -WorkingDirectory $srcDir
+                 $result = $captured.Output
+                 if ($captured.ExitCode -ne 0) {
+                     Write-Host "  [FAIL] tauri build" -ForegroundColor Red
+                     Write-Host ($result -join "`n")
+                     return $false
+                 }
+             }
+             finally {
+                 Pop-Location
+             }
          }
-         $exe = Join-Path $srcDir 'src-tauri\target\x86_64-pc-windows-msvc\release\tauri_webview_app.exe'
+         finally {
+             $env:PATH = $oldPath
+         }
+         $exe = Join-Path $srcDir "src-tauri\target\$rustTarget\release\tauri_webview_app.exe"
          if (Test-Path $exe) { Copy-Item $exe (Join-Path $outSub 'tauri_webview_app.exe') -Force }
      }
      '33' {
@@ -1227,20 +1347,20 @@ function Build-GuiAppTarget {
          Copy-Item $buildOut $destDir -Recurse -Force
      }
      '34' {
-         $javac = Get-Command javac -ErrorAction SilentlyContinue
-         $jar = Get-Command jar -ErrorAction SilentlyContinue
-         $jpackage = Get-Command jpackage -ErrorAction SilentlyContinue
-         if (-not $javac -or -not $jar -or -not $jpackage) {
+         $javaHome = Get-JavaHomeForArch -Arch $arch
+         $javacDefault = if ($javaHome) { Join-Path $javaHome 'bin\javac.exe' } else { '' }
+         $jarDefault = if ($javaHome) { Join-Path $javaHome 'bin\jar.exe' } else { '' }
+         $javacExe = Get-CommandPathOrDefault -CommandName 'javac.exe' -DefaultPath $javacDefault
+         $jarExe = Get-CommandPathOrDefault -CommandName 'jar.exe' -DefaultPath $jarDefault
+         $jpackageExe = if ($arch -eq 'x86') { '' } else { Get-CommandPathOrDefault -CommandName 'jpackage.exe' -DefaultPath '' }
+         $javaRuntimeExe = if ($javaHome) { Join-Path $javaHome 'bin\java.exe' } else { Get-CommandPathOrDefault -CommandName 'java.exe' -DefaultPath '' }
+         if ([string]::IsNullOrWhiteSpace($javacExe) -or [string]::IsNullOrWhiteSpace($jarExe) -or
+             -not (Test-Path -LiteralPath $javacExe) -or -not (Test-Path -LiteralPath $jarExe) -or
+             ($arch -eq 'x86' -and (-not (Test-Path -LiteralPath $javaRuntimeExe))) -or
+             ($arch -ne 'x86' -and ([string]::IsNullOrWhiteSpace($jpackageExe) -or -not (Test-Path -LiteralPath $jpackageExe)))) {
              Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
              Write-Host "  TARGET: $TargetId ($TargetDir) [Java Swing]" -ForegroundColor Yellow
-             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (javac, jar, or jpackage not installed)" -ForegroundColor DarkYellow
-             Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-             return $true
-         }
-         if ($arch -eq 'x86') {
-             Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
-             Write-Host "  TARGET: $TargetId ($TargetDir) [Java Swing]" -ForegroundColor Yellow
-             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (JDK packaging follows host x64 arch)" -ForegroundColor DarkYellow
+             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (required Java tools/runtime not installed for $arch)" -ForegroundColor DarkYellow
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
@@ -1249,36 +1369,52 @@ function Build-GuiAppTarget {
          $jarDir = Join-Path $buildDir 'jar'
          Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
          Write-Host "  TARGET: $TargetId ($TargetDir) [Java Swing]" -ForegroundColor Yellow
-         Write-Host "  CONFIG: $($Config.Name)  |  ARCH: x64" -ForegroundColor Yellow
+         Write-Host "  CONFIG: $($Config.Name)  |  ARCH: $arch" -ForegroundColor Yellow
+         Write-Host "  JAVAC:  $javacExe" -ForegroundColor DarkYellow
+         if ($arch -eq 'x86') { Write-Host "  JAVA:   $javaRuntimeExe" -ForegroundColor DarkYellow }
          Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
-         if ($Clean -and (Test-Path $buildDir)) { Remove-Item -Recurse -Force $buildDir }
+         if ($Clean -and (Test-Path $buildDir)) { Remove-BuildDirectorySafely -BuildDir $buildDir }
          New-Item -ItemType Directory -Force -Path $classes, $jarDir | Out-Null
          $source = Join-Path $srcDir 'src\main\java\protector\victims\JavaSwingVictim.java'
-         $compile = & javac -d $classes $source 2>&1
-         if ($LASTEXITCODE -ne 0) {
+         $captured = Invoke-NativeCaptured -FilePath $javacExe -ArgumentList @('-source', '8', '-target', '8', '-d', $classes, $source)
+         $compile = $captured.Output
+         if ($captured.ExitCode -ne 0) {
              Write-Host "  [FAIL] javac" -ForegroundColor Red
              Write-Host ($compile -join "`n")
              return $false
          }
          $jarFile = Join-Path $jarDir 'java_swing_app.jar'
-         $jarResult = & jar --create --file $jarFile --main-class protector.victims.JavaSwingVictim -C $classes . 2>&1
-         if ($LASTEXITCODE -ne 0) {
+         $captured = Invoke-NativeCaptured -FilePath $jarExe -ArgumentList @('cfe', $jarFile, 'protector.victims.JavaSwingVictim', '-C', $classes, '.')
+         $jarResult = $captured.Output
+         if ($captured.ExitCode -ne 0) {
              Write-Host "  [FAIL] jar" -ForegroundColor Red
              Write-Host ($jarResult -join "`n")
              return $false
          }
          $appDir = Join-Path $outSub 'java_swing_app'
          if (Test-Path $appDir) { Remove-Item -Recurse -Force $appDir }
-         $pkgResult = & jpackage --type app-image --name java_swing_app --input $jarDir --main-jar java_swing_app.jar --dest $outSub 2>&1
-         if ($LASTEXITCODE -ne 0) {
-             Write-Host "  [FAIL] jpackage" -ForegroundColor Red
-             Write-Host ($pkgResult -join "`n")
-             return $false
+         if ($arch -eq 'x86') {
+             New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+             Copy-Item -LiteralPath $jarFile -Destination (Join-Path $appDir 'java_swing_app.jar') -Force
+             $launcher = @"
+@echo off
+"$javaRuntimeExe" -jar "%~dp0java_swing_app.jar" %*
+"@
+             $launcher | Set-Content -LiteralPath (Join-Path $appDir 'java_swing_app.cmd') -Encoding ASCII
+         }
+         else {
+             $captured = Invoke-NativeCaptured -FilePath $jpackageExe -ArgumentList @('--type', 'app-image', '--name', 'java_swing_app', '--input', $jarDir, '--main-jar', 'java_swing_app.jar', '--dest', $outSub)
+             $pkgResult = $captured.Output
+             if ($captured.ExitCode -ne 0) {
+                 Write-Host "  [FAIL] jpackage" -ForegroundColor Red
+                 Write-Host ($pkgResult -join "`n")
+                 return $false
+             }
          }
      }
  }
 
- $artifacts = Get-ChildItem -Path $outSub -Recurse -Include *.exe,*.dll,*.jar 2>$null
+ $artifacts = Get-ChildItem -Path $outSub -Recurse -Include *.exe,*.dll,*.jar,*.cmd 2>$null
  if ($artifacts) {
      Write-Host "  [OK]   artifacts:" -ForegroundColor Green
      foreach ($a in $artifacts) {
@@ -1358,17 +1494,36 @@ function Build-PlatformTarget {
 
  New-Item -ItemType Directory -Force -Path $outSub | Out-Null
 
+ $exitCode = 0
+
  switch ($TargetId) {
      '37' {
-         if ($hostPlatform -ne 'linux') {
+         $targetOut = Join-Path $outSub 'linux_shared_library'
+         if ($hostPlatform -eq 'windows') {
+             if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+                 Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
+                 Write-Host "  TARGET: $TargetId ($TargetDir) [Linux shared library]" -ForegroundColor Yellow
+                 Write-Host "  CONFIG: $($Config.Name)  |  SKIP (WSL is not available)" -ForegroundColor DarkYellow
+                 Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+                 return $true
+             }
+             $wslSrc = ConvertTo-WslPath -Path $srcDir
+             $wslOut = ConvertTo-WslPath -Path $targetOut
+             $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", 'all')
+             $result = $captured.Output
+             $exitCode = $captured.ExitCode
+         }
+         elseif ($hostPlatform -ne 'linux') {
              Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
              Write-Host "  TARGET: $TargetId ($TargetDir) [Linux shared library]" -ForegroundColor Yellow
              Write-Host "  CONFIG: $($Config.Name)  |  SKIP (requires Linux host)" -ForegroundColor DarkYellow
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
-         $targetOut = Join-Path $outSub 'linux_shared_library'
-         $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
+         else {
+             $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
+             $exitCode = $LASTEXITCODE
+         }
      }
      '38' {
          if ($hostPlatform -ne 'macos') {
@@ -1382,15 +1537,32 @@ function Build-PlatformTarget {
          $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
      }
      '39' {
-         if ($hostPlatform -ne 'linux') {
+         $targetOut = Join-Path $outSub 'linux_cli_app'
+         if ($hostPlatform -eq 'windows') {
+             if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+                 Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
+                 Write-Host "  TARGET: $TargetId ($TargetDir) [Linux CLI]" -ForegroundColor Yellow
+                 Write-Host "  CONFIG: $($Config.Name)  |  SKIP (WSL is not available)" -ForegroundColor DarkYellow
+                 Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+                 return $true
+             }
+             $wslSrc = ConvertTo-WslPath -Path $srcDir
+             $wslOut = ConvertTo-WslPath -Path $targetOut
+             $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", 'all')
+             $result = $captured.Output
+             $exitCode = $captured.ExitCode
+         }
+         elseif ($hostPlatform -ne 'linux') {
              Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
              Write-Host "  TARGET: $TargetId ($TargetDir) [Linux CLI]" -ForegroundColor Yellow
              Write-Host "  CONFIG: $($Config.Name)  |  SKIP (requires Linux host)" -ForegroundColor DarkYellow
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
-         $targetOut = Join-Path $outSub 'linux_cli_app'
-         $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
+         else {
+             $result = & make -C $srcDir "OUT=$targetOut" all 2>&1
+             $exitCode = $LASTEXITCODE
+         }
      }
      '40' {
          if ($hostPlatform -ne 'macos') {
@@ -1416,7 +1588,7 @@ function Build-PlatformTarget {
      }
  }
 
- if ($LASTEXITCODE -ne 0) {
+ if ($exitCode -ne 0) {
      Write-Host "  [FAIL] platform build" -ForegroundColor Red
      Write-Host ($result -join "`n")
      return $false
@@ -1571,16 +1743,17 @@ function Build-LlvmLitTarget {
 
  $srcDir = Join-Path $script:Root $TargetDir
  $outSub = Join-Path $OutDir $Config.Name
- $llvmProjectDir = $env:LLVM_PROJECT_DIR
- $llvmBuildDir = $env:LLVM_BUILD_DIR
+ $llvmProjectDir = $DefaultLlvmProjectDir
+ $llvmBuildDir = $DefaultLlvmBuildDir
 
  Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
  Write-Host "  TARGET: $TargetId ($TargetDir) [LLVM LIT binaries]" -ForegroundColor Yellow
  Write-Host "  CONFIG: $($Config.Name)" -ForegroundColor Yellow
  Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
 
- if ([string]::IsNullOrWhiteSpace($llvmProjectDir) -or [string]::IsNullOrWhiteSpace($llvmBuildDir)) {
-     Write-Host "  SKIP: set LLVM_PROJECT_DIR and LLVM_BUILD_DIR to package an llvmorg-20.1.0 build." -ForegroundColor DarkYellow
+ if ([string]::IsNullOrWhiteSpace($llvmProjectDir) -or [string]::IsNullOrWhiteSpace($llvmBuildDir) -or
+     -not (Test-Path -LiteralPath $llvmProjectDir) -or -not (Test-Path -LiteralPath $llvmBuildDir)) {
+     Write-Host "  SKIP: set LLVM_PROJECT_DIR and LLVM_BUILD_DIR to existing LLVM source/build directories." -ForegroundColor DarkYellow
      return $true
  }
 
