@@ -50,6 +50,106 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:Root = Split-Path -Parent $PSCommandPath
+$script:EnvironmentBaseline = @{}
+Get-ChildItem Env: | ForEach-Object {
+    $script:EnvironmentBaseline[$_.Name] = $_.Value
+}
+$script:CurrentVsArch = ''
+
+$script:VsEnvironmentVariableNames = @(
+    'DevEnvDir',
+    'ExtensionSdkDir',
+    'Framework40Version',
+    'FrameworkDir',
+    'FrameworkDir64',
+    'FrameworkVersion',
+    'FrameworkVersion64',
+    'INCLUDE',
+    'LIB',
+    'LIBPATH',
+    'NETFXSDKDir',
+    'UCRTVersion',
+    'UniversalCRTSdkDir',
+    'VCIDEInstallDir',
+    'VCINSTALLDIR',
+    'VCToolsInstallDir',
+    'VCToolsRedistDir',
+    'VSCMD_ARG_app_plat',
+    'VSCMD_ARG_HOST_ARCH',
+    'VSCMD_ARG_TGT_ARCH',
+    'VSCMD_VER',
+    'VSINSTALLDIR',
+    'WindowsLibPath',
+    'WindowsSdkBinPath',
+    'WindowsSdkDir',
+    'WindowsSDKLibVersion',
+    'WindowsSDKVersion',
+    '__DOTNET_ADD_64BIT',
+    '__DOTNET_PREFERRED_BITNESS',
+    '__VSCMD_PREINIT_PATH'
+)
+
+function Restore-BaselineEnvironmentForVsImport {
+    $currentNames = @(Get-ChildItem Env: | ForEach-Object { $_.Name })
+    foreach ($name in $currentNames) {
+        if (-not $script:EnvironmentBaseline.ContainsKey($name)) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        }
+    }
+
+    foreach ($entry in $script:EnvironmentBaseline.GetEnumerator()) {
+        if ($script:VsEnvironmentVariableNames -contains $entry.Key) {
+            continue
+        }
+        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+    }
+
+    foreach ($name in $script:VsEnvironmentVariableNames) {
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+
+    $basePath = $script:EnvironmentBaseline['PATH']
+    if ($script:EnvironmentBaseline.ContainsKey('__VSCMD_PREINIT_PATH') -and -not [string]::IsNullOrWhiteSpace($script:EnvironmentBaseline['__VSCMD_PREINIT_PATH'])) {
+        $basePath = $script:EnvironmentBaseline['__VSCMD_PREINIT_PATH']
+    }
+    if (-not [string]::IsNullOrWhiteSpace($basePath)) {
+        [Environment]::SetEnvironmentVariable('PATH', $basePath, 'Process')
+    }
+}
+
+function Get-NormalizedPathForCompare {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    try {
+        if (Test-Path -LiteralPath $Path) {
+            return ([System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)).TrimEnd('\').ToLowerInvariant()
+        }
+        return ([System.IO.Path]::GetFullPath($Path)).TrimEnd('\').ToLowerInvariant()
+    }
+    catch {
+        return ($Path -replace '/', '\').TrimEnd('\').ToLowerInvariant()
+    }
+}
+
+function Remove-BuildDirectorySafely {
+    param([string]$BuildDir)
+
+    if (-not (Test-Path -LiteralPath $BuildDir)) {
+        return
+    }
+
+    $resolvedTarget = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $BuildDir).Path).TrimEnd('\')
+    $resolvedBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $script:Root 'build')).TrimEnd('\')
+    if (-not $resolvedTarget.StartsWith($resolvedBuildRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove build directory outside workspace build root: $resolvedTarget"
+    }
+
+    Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+}
 
 $DefaultLlvmProjectDir = if ([string]::IsNullOrWhiteSpace($env:LLVM_PROJECT_DIR)) { 'D:\llvm-lit\llvm-project' } else { $env:LLVM_PROJECT_DIR }
 $DefaultCygwinRoot     = if ([string]::IsNullOrWhiteSpace($env:CYGWIN_ROOT)) { 'D:\cygwin' } else { $env:CYGWIN_ROOT }
@@ -311,6 +411,8 @@ function Import-VSEnv {
         exit 1
     }
 
+    Restore-BaselineEnvironmentForVsImport
+
     # Run vcvarsall and import its environment into current process
     $archArg = if ($Arch -eq 'x86') { 'x86' } else { 'amd64' }
     Write-Host "  [vs] $vcvars $archArg" -ForegroundColor DarkGray
@@ -332,6 +434,16 @@ function Import-VSEnv {
 }
 
 # ── Build one target under one config ────────────────────────────────────────
+function Ensure-VSEnv {
+    param([string]$Arch)
+
+    if ($script:CurrentVsArch -ne $Arch) {
+        Write-Host "`n>>> Setting up $Arch Visual Studio environment..." -ForegroundColor Blue
+        Import-VSEnv -Arch $Arch
+        $script:CurrentVsArch = $Arch
+    }
+}
+
 function Get-ConfigToolchain {
     param($Config)
     if ($Config.PSObject.Properties.Name -contains 'Toolchain' -and -not [string]::IsNullOrWhiteSpace($Config.Toolchain)) {
@@ -378,6 +490,98 @@ function Test-TargetToolchainAvailable {
     return $true
 }
 
+function New-ClangGnuMsvcLinkRuleOverride {
+    param([string]$BuildDir)
+
+    New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+
+    $overridePath = Join-Path $BuildDir 'clang-gnu-msvc-link-rules.cmake'
+    @'
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  set(CMAKE_CXX_LINK_EXECUTABLE "<CMAKE_CXX_COMPILER> <FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> -Xlinker /MANIFEST:EMBED -Xlinker /implib:<TARGET_IMPLIB> -Xlinker /pdb:<TARGET_PDB> -Xlinker /version:<TARGET_VERSION_MAJOR>.<TARGET_VERSION_MINOR> <LINK_LIBRARIES> <MANIFESTS>")
+  set(CMAKE_CXX_CREATE_SHARED_LIBRARY "<CMAKE_CXX_COMPILER> <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LANGUAGE_COMPILE_FLAGS> <LINK_FLAGS> -o <TARGET> -Xlinker /MANIFEST:EMBED -Xlinker /implib:<TARGET_IMPLIB> -Xlinker /pdb:<TARGET_PDB> -Xlinker /version:<TARGET_VERSION_MAJOR>.<TARGET_VERSION_MINOR> <OBJECTS> <LINK_LIBRARIES> <MANIFESTS>")
+  set(CMAKE_CXX_CREATE_SHARED_MODULE "${CMAKE_CXX_CREATE_SHARED_LIBRARY}")
+endif()
+'@ | Set-Content -LiteralPath $overridePath -Encoding ASCII
+
+    return $overridePath
+}
+
+function Get-CMakeCacheValue {
+    param(
+        [string[]]$CacheLines,
+        [string]$Name
+    )
+
+    foreach ($line in $CacheLines) {
+        if ($line -match "^$([regex]::Escape($Name)):[^=]*=(.*)$") {
+            return $matches[1]
+        }
+    }
+    return ''
+}
+
+function Reset-CMakeBuildDirIfStale {
+    param(
+        [string]$BuildDir,
+        [string]$SourceDir,
+        [string]$OutputDir,
+        $Config,
+        [string]$Toolchain
+    )
+
+    $cachePath = Join-Path $BuildDir 'CMakeCache.txt'
+    if (-not (Test-Path -LiteralPath $cachePath)) {
+        return
+    }
+
+    $cache = Get-Content -LiteralPath $cachePath -ErrorAction SilentlyContinue
+    $staleReasons = @()
+
+    $cachedSource = Get-CMakeCacheValue -CacheLines $cache -Name 'CMAKE_HOME_DIRECTORY'
+    if ($cachedSource -and (Get-NormalizedPathForCompare $cachedSource) -ne (Get-NormalizedPathForCompare $SourceDir)) {
+        $staleReasons += 'source directory changed'
+    }
+
+    $cachedOut = Get-CMakeCacheValue -CacheLines $cache -Name 'MATRIX_OUTPUT_DIR'
+    if ($cachedOut -and (Get-NormalizedPathForCompare $cachedOut) -ne (Get-NormalizedPathForCompare $OutputDir)) {
+        $staleReasons += 'matrix output directory changed'
+    }
+
+    $cachedPointerSize = Get-CMakeCacheValue -CacheLines $cache -Name 'CMAKE_SIZEOF_VOID_P'
+    $expectedPointerSize = if ($Config.Arch -eq 'x86') { '4' } else { '8' }
+    if ($cachedPointerSize -and $cachedPointerSize -ne $expectedPointerSize) {
+        $staleReasons += "cached pointer size is $cachedPointerSize, expected $expectedPointerSize"
+    }
+
+    if ($Toolchain -eq 'msvc') {
+        $expectedCl = Get-Command cl.exe -ErrorAction SilentlyContinue
+        $cachedC = Get-CMakeCacheValue -CacheLines $cache -Name 'CMAKE_C_COMPILER'
+        $cachedCxx = Get-CMakeCacheValue -CacheLines $cache -Name 'CMAKE_CXX_COMPILER'
+        if ($expectedCl -and $cachedC -and (Get-NormalizedPathForCompare $cachedC) -ne (Get-NormalizedPathForCompare $expectedCl.Source)) {
+            $staleReasons += 'MSVC C compiler changed'
+        }
+        if ($expectedCl -and $cachedCxx -and (Get-NormalizedPathForCompare $cachedCxx) -ne (Get-NormalizedPathForCompare $expectedCl.Source)) {
+            $staleReasons += 'MSVC CXX compiler changed'
+        }
+    }
+    elseif ($Config.PSObject.Properties.Name -contains 'CxxCompiler' -and -not [string]::IsNullOrWhiteSpace($Config.CxxCompiler)) {
+        $cachedC = Get-CMakeCacheValue -CacheLines $cache -Name 'CMAKE_C_COMPILER'
+        $cachedCxx = Get-CMakeCacheValue -CacheLines $cache -Name 'CMAKE_CXX_COMPILER'
+        if ($cachedC -and (Get-NormalizedPathForCompare $cachedC) -ne (Get-NormalizedPathForCompare $Config.CxxCompiler)) {
+            $staleReasons += 'configured C compiler changed'
+        }
+        if ($cachedCxx -and (Get-NormalizedPathForCompare $cachedCxx) -ne (Get-NormalizedPathForCompare $Config.CxxCompiler)) {
+            $staleReasons += 'configured CXX compiler changed'
+        }
+    }
+
+    if ($staleReasons.Count -gt 0) {
+        Write-Host "  [clean] removing stale CMake build directory: $($staleReasons -join '; ')" -ForegroundColor DarkYellow
+        Remove-BuildDirectorySafely -BuildDir $BuildDir
+    }
+}
+
 function Build-Target {
     param(
         $Config,
@@ -389,7 +593,7 @@ function Build-Target {
     $srcDir   = Join-Path $script:Root $TargetDir
 
     if ($Clean -and (Test-Path $buildDir)) {
-        Remove-Item -Recurse -Force $buildDir
+        Remove-BuildDirectorySafely -BuildDir $buildDir
     }
 
     New-Item -ItemType Directory -Force -Path $outSub | Out-Null
@@ -399,6 +603,11 @@ function Build-Target {
     }
 
     $toolchain = Get-ConfigToolchain $Config
+    if (Test-ConfigRequiresVSEnv $Config) {
+        Ensure-VSEnv -Arch $Config.Arch
+    }
+    Reset-CMakeBuildDirIfStale -BuildDir $buildDir -SourceDir $srcDir -OutputDir $outSub -Config $Config -Toolchain $toolchain
+
     $cmakeArgs = @(
         '-G', 'Ninja',
         '-S', $srcDir,
@@ -411,6 +620,10 @@ function Build-Target {
 
     if ($Config.PSObject.Properties.Name -contains 'CxxCompiler' -and -not [string]::IsNullOrWhiteSpace($Config.CxxCompiler)) {
         $cmakeArgs += "-DCMAKE_CXX_COMPILER=$($Config.CxxCompiler)"
+    }
+    if ($toolchain -eq 'llvm') {
+        $overridePath = New-ClangGnuMsvcLinkRuleOverride -BuildDir $buildDir
+        $cmakeArgs += "-DCMAKE_USER_MAKE_RULES_OVERRIDE_CXX=$overridePath"
     }
     if ($toolchain -ne 'msvc') {
         $cmakeArgs += "-DCMAKE_CXX_FLAGS_RELEASE=$($Config.CxxFlags)"
@@ -850,6 +1063,13 @@ function Build-GuiAppTarget {
              Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
              return $true
          }
+         if ($arch -eq 'x86') {
+             Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
+             Write-Host "  TARGET: $TargetId ($TargetDir) [Node.js/pkg]" -ForegroundColor Yellow
+             Write-Host "  CONFIG: $($Config.Name)  |  SKIP (pkg has no cached Node 18 win-x86 base binary)" -ForegroundColor DarkYellow
+             Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+             return $true
+         }
          $pkgTarget = if ($arch -eq 'x86') { 'node18-win-x86' } else { 'node18-win-x64' }
          $outFile = Join-Path $outSub 'nodejs_gui_app.exe'
          Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
@@ -979,6 +1199,22 @@ function Build-GuiAppTarget {
                  return $false
              }
          }
+         $flutterWindowsBuild = Join-Path $srcDir 'build\windows'
+         $flutterCmakeCache = Join-Path $flutterWindowsBuild 'x64\CMakeCache.txt'
+         if (Test-Path -LiteralPath $flutterCmakeCache) {
+             $expectedSource = ((Join-Path $srcDir 'windows') -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+             $cacheSource = ''
+             foreach ($line in Get-Content -LiteralPath $flutterCmakeCache -ErrorAction SilentlyContinue) {
+                 if ($line -match '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$') {
+                     $cacheSource = ($matches[1] -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+                     break
+                 }
+             }
+             if ($cacheSource -and $cacheSource -ne $expectedSource) {
+                 Write-Host "  [clean] removing stale Flutter CMake cache from $cacheSource" -ForegroundColor DarkYellow
+                 Remove-Item -LiteralPath $flutterWindowsBuild -Recurse -Force
+             }
+         }
          $result = cmd /c "cd /d `"$srcDir`" && `"$flutterCmd`" build windows --$($vsCfg.ToLowerInvariant()) 2>&1"
          if ($LASTEXITCODE -ne 0) {
              Write-Host "  [FAIL] flutter build" -ForegroundColor Red
@@ -1064,11 +1300,53 @@ function Get-HostPlatformName {
 function ConvertTo-WslPath {
  param([string]$Path)
 
- $converted = & wsl.exe wslpath -a $Path 2>&1
+ $fullPath = [System.IO.Path]::GetFullPath($Path)
+ if ($fullPath -match '^([A-Za-z]):[\\/](.*)$') {
+     $drive = $matches[1].ToLowerInvariant()
+     $rest = $matches[2] -replace '\\', '/'
+     return "/mnt/$drive/$rest"
+ }
+
+ $converted = & wsl.exe wslpath -a -- $fullPath 2>&1
  if ($LASTEXITCODE -ne 0) {
-     throw "wslpath failed for '$Path': $($converted -join ' ')"
+     throw "wslpath failed for '$fullPath': $($converted -join ' ')"
  }
  return ($converted | Select-Object -First 1)
+}
+
+function Quote-NativeArgument {
+ param([string]$Argument)
+
+ if ($null -eq $Argument) { return '""' }
+ if ($Argument -notmatch '[\s"]') { return $Argument }
+
+ return '"' + ($Argument -replace '"', '\"') + '"'
+}
+
+function Invoke-NativeCaptured {
+ param(
+     [string]$FilePath,
+     [string[]]$ArgumentList,
+     [string]$WorkingDirectory = $script:Root
+ )
+
+ $base = Join-Path ([System.IO.Path]::GetTempPath()) ("victim-matrix-native-{0}" -f ([guid]::NewGuid().ToString('N')))
+ $stdoutFile = "$base.out"
+ $stderrFile = "$base.err"
+ try {
+     $quotedArgs = ($ArgumentList | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+     $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArgs -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -NoNewWindow -Wait -PassThru
+     $output = @()
+     if (Test-Path -LiteralPath $stdoutFile) { $output += Get-Content -LiteralPath $stdoutFile -ErrorAction SilentlyContinue }
+     if (Test-Path -LiteralPath $stderrFile) { $output += Get-Content -LiteralPath $stderrFile -ErrorAction SilentlyContinue }
+     return [pscustomobject]@{
+         Output = $output
+         ExitCode = $process.ExitCode
+     }
+ }
+ finally {
+     Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+ }
 }
 
 function Build-PlatformTarget {
@@ -1216,6 +1494,8 @@ function Build-ScriptTarget {
      return $true
  }
 
+ $exitCode = 0
+
  if ($runLinuxViaWsl) {
      if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
          Write-Host "  SKIP: WSL is not available on this Windows host." -ForegroundColor DarkYellow
@@ -1224,11 +1504,15 @@ function Build-ScriptTarget {
      $wslOut = ConvertTo-WslPath -Path $outSub
      if (Test-Path -LiteralPath $shScript) {
          $wslScript = ConvertTo-WslPath -Path $shScript
-         $result = & wsl.exe bash $wslScript $wslOut $scriptArch $Config.Name 2>&1
+         $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('bash', $wslScript, $wslOut, $scriptArch, $Config.Name)
+         $result = $captured.Output
+         $exitCode = $captured.ExitCode
      }
      elseif (Test-Path -LiteralPath $makefile) {
          $wslSrc = ConvertTo-WslPath -Path $srcDir
-         $result = & wsl.exe make -C $wslSrc "OUT=$wslOut" all 2>&1
+         $captured = Invoke-NativeCaptured -FilePath 'wsl.exe' -ArgumentList @('make', '-C', $wslSrc, "OUT=$wslOut", 'all')
+         $result = $captured.Output
+         $exitCode = $captured.ExitCode
      }
      else {
          Write-Host "  [FAIL] Linux target has no build.sh or Makefile for WSL dispatch." -ForegroundColor Red
@@ -1236,6 +1520,9 @@ function Build-ScriptTarget {
      }
  }
  elseif (Test-Path -LiteralPath $psScript) {
+     if ($windowsOnly -contains $TargetId) {
+         Ensure-VSEnv -Arch $scriptArch
+     }
      $scriptArgs = @(
          '-NoProfile',
          '-ExecutionPolicy', 'Bypass',
@@ -1247,21 +1534,24 @@ function Build-ScriptTarget {
      )
      if ($Clean) { $scriptArgs += '-Clean' }
      $result = & powershell @scriptArgs 2>&1
+     $exitCode = $LASTEXITCODE
  }
  elseif (Test-Path -LiteralPath $shScript) {
      $result = & sh $shScript $outSub $scriptArch $Config.Name 2>&1
+     $exitCode = $LASTEXITCODE
  }
  elseif (Test-Path -LiteralPath $makefile) {
      $result = & make -C $srcDir "OUT=$outSub" all 2>&1
+     $exitCode = $LASTEXITCODE
  }
 
  Write-Host ($result -join "`n")
- if ($LASTEXITCODE -ne 0) {
+ if ($exitCode -ne 0) {
      Write-Host "  [FAIL] scripted target build failed" -ForegroundColor Red
      return $false
  }
 
- $artifactExts = [System.Collections.Generic.HashSet[string]]@('.exe', '.dll', '.map', '.pdb', '.so', '.dylib', '.ko')
+ $artifactExts = [System.Collections.Generic.HashSet[string]]@('.exe', '.dll', '.efi', '.map', '.pdb', '.so', '.dylib', '.ko')
  $artifacts = Get-ChildItem -Path $outSub -Recurse -ErrorAction SilentlyContinue | Where-Object {
      ($_.PSIsContainer -and $_.Extension -eq '.app') -or
      ((-not $_.PSIsContainer) -and ($artifactExts.Contains($_.Extension) -or ([string]::IsNullOrEmpty($_.Extension) -and $_.Name -match '^(linux_|macos_|gcc_|msvc_|ios_|delphi_|win32_)')))
@@ -1351,17 +1641,12 @@ $scriptTargets = $selectedTargets | Where-Object { $ScriptTargets.Contains($_.Ke
 $llvmLitTargets = $selectedTargets | Where-Object { $LlvmLitTargets.Contains($_.Key) }
 # ── C++ targets (need vcvars per arch) ───────────────────────────────────────
 if ($cppTargets) {
-    $currentVsArch = ''
     foreach ($cfg in $selectedConfigs) {
         foreach ($tgt in $cppTargets) {
             if (-not (Test-ConfigAppliesToTarget -Config $cfg -TargetId $tgt.Key)) {
                 continue
             }
-            if ((Test-ConfigRequiresVSEnv $cfg) -and $currentVsArch -ne $cfg.Arch) {
-                Write-Host "`n>>> Setting up $($cfg.Arch) Visual Studio environment for C++ targets..." -ForegroundColor Blue
-                Import-VSEnv -Arch $cfg.Arch
-                $currentVsArch = $cfg.Arch
-            }
+            if (Test-ConfigRequiresVSEnv $cfg) { Ensure-VSEnv -Arch $cfg.Arch }
             $ok = Build-Target -Config $cfg -TargetId $tgt.Key -TargetDir $tgt.Value
             if ($ok) { $succeeded++ } else { $failed++ }
         }

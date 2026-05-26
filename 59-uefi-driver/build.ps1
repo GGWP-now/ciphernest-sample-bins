@@ -31,6 +31,35 @@ function Get-Edk2Workspace {
     return ''
 }
 
+function Get-PeMachineType {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        if ($stream.Length -lt 0x40) {
+            throw "PE image is too small: $Path"
+        }
+
+        $reader = [System.IO.BinaryReader]::new($stream)
+        $stream.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $peOffset = $reader.ReadInt32()
+        if ($peOffset -lt 0 -or ($peOffset + 6) -gt $stream.Length) {
+            throw "PE header offset is invalid: $Path"
+        }
+
+        $stream.Seek($peOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $signature = $reader.ReadUInt32()
+        if ($signature -ne 0x00004550) {
+            throw "PE signature is invalid: $Path"
+        }
+
+        return $reader.ReadUInt16()
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 $edkWorkspace = Get-Edk2Workspace
 if ([string]::IsNullOrWhiteSpace($edkWorkspace)) {
     Copy-Item -LiteralPath (Join-Path $Root 'UefiVictim.c') -Destination $OutDir -Force
@@ -41,6 +70,8 @@ if ([string]::IsNullOrWhiteSpace($edkWorkspace)) {
 }
 
 $archName = if ($Arch -eq 'x86') { 'IA32' } else { 'X64' }
+$expectedMachine = if ($Arch -eq 'x86') { 0x014c } else { 0x8664 }
+$expectedMachineName = if ($Arch -eq 'x86') { 'IA32' } else { 'X64' }
 $target = if ($Configuration -eq 'Debug') { 'DEBUG' } else { 'RELEASE' }
 $toolchain = if (Test-Path -LiteralPath "${env:ProgramFiles}\Microsoft Visual Studio\18") { 'VS2026' } else { 'VS2022' }
 $nasmPrefix = if (Test-Path -LiteralPath 'C:\Program Files\NASM\nasm.exe') { 'C:\Program Files\NASM\' } else { $env:NASM_PREFIX }
@@ -68,12 +99,35 @@ $process = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', "
 $exitCode = $process.ExitCode
 $stdout = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -ErrorAction SilentlyContinue } else { @() }
 $stderr = if (Test-Path -LiteralPath $stderrFile) { Get-Content -LiteralPath $stderrFile -ErrorAction SilentlyContinue } else { @() }
-Write-Host (($stdout + $stderr) -join "`n")
+$output = $stdout + $stderr
+if ($exitCode -eq 0) {
+    $output = $output | Where-Object {
+        $_ -notmatch '^!!! ERROR !!! Cannot find BaseTools Bin Win32!!!$' -and
+        $_ -notmatch '^Please check the directory\s*$' -and
+        $_ -notmatch '^Or configure EDK_TOOLS_BIN env to point to Bin directory\.$'
+    }
+}
+Write-Host ($output -join "`n")
 if ($exitCode -ne 0) { exit $exitCode }
 
-$efiFiles = Get-ChildItem -LiteralPath $edkWorkspace -Recurse -Filter UefiVictim.efi -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-if ($efiFiles) {
-    Copy-Item -LiteralPath $efiFiles[0].FullName -Destination (Join-Path $OutDir 'UefiVictim.efi') -Force
+$buildArchRoot = Join-Path $edkWorkspace "Build\UefiVictimPkg\$($target)_$toolchain\$archName"
+$efiFile = Join-Path $buildArchRoot 'UefiVictim.efi'
+if (-not (Test-Path -LiteralPath $efiFile)) {
+    $efiFile = Get-ChildItem -LiteralPath $buildArchRoot -Recurse -Filter UefiVictim.efi -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -ExpandProperty FullName -First 1
 }
 
-Write-Host 'OK: UEFI driver build complete'
+if (-not $efiFile -or -not (Test-Path -LiteralPath $efiFile)) {
+    throw "UEFI build completed but did not produce $expectedMachineName artifact under $buildArchRoot"
+}
+
+$machine = Get-PeMachineType -Path $efiFile
+if ($machine -ne $expectedMachine) {
+    throw ("UEFI build produced wrong machine type 0x{0:X4}; expected {1} for {2}" -f $machine, $expectedMachineName, $Arch)
+}
+
+$destination = Join-Path $OutDir 'UefiVictim.efi'
+Copy-Item -LiteralPath $efiFile -Destination $destination -Force
+
+Write-Host "OK: UEFI driver build complete ($expectedMachineName)"
