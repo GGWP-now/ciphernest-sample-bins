@@ -1,0 +1,15 @@
+{
+  "name": "nodejs-gui-victim",
+  "version": "1.0.0",
+  "private": true,
+  "bin": "main.js",
+  "scripts": {
+    "check": "node --check main.js"
+  },
+  "pkg": {
+    "scripts": "main.js"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.6.0"
+  }
+}

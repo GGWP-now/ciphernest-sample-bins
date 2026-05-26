@@ -1,0 +1,25 @@
+apps/
+bin/
+build/
+cmake/
+**/obj/*
+**/Debug/*
+**/Release/*
+**/Generated Files/*
+**/packages/*
+**/node_modules/*
+**/dist/*
+**/target/*
+**/.zig-cache/*
+*.obj
+*.res
+*.local
+*.exp
+*.lib
+*.pdb
+*.exe
+*.bin
+*.sys
+*.zip
+*.lock
+*.pyc

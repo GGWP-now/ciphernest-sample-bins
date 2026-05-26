@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>MauiNoteApp</RootNamespace>
+    <UseMaui>true</UseMaui>
+    <UseWinUI>true</UseWinUI>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationTitle>Note App</ApplicationTitle>
+    <WindowsPackageType>None</WindowsPackageType>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <!-- The dotnet SDK is missing AppxPackage MSBuild tasks; point at the VS install. -->
+    <AppxMSBuildToolsPath>C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VisualStudio\v18.0\AppxPackage\</AppxMSBuildToolsPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinUI App XAML — ApplicationDefinition only.
+         Strip MAUI/Page collections so the WinAppSDK XAML compiler doesn't see it twice. -->
+    <ApplicationDefinition Include="Platforms\Windows\App.xaml" SubType="Designer" />
+    <Page Remove="Platforms\Windows\App.xaml" />
+    <MauiXaml Remove="Platforms\Windows\App.xaml" />
+    <None Remove="Platforms\Windows\App.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+  </ItemGroup>
+</Project>

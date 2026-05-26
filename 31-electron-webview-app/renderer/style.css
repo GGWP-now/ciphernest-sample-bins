@@ -1,0 +1,20 @@
+body {
+  margin: 0;
+  font: 15px/1.4 "Segoe UI", sans-serif;
+  background: #f4f6f8;
+  color: #17202a;
+}
+
+main {
+  max-width: 520px;
+  margin: 70px auto;
+}
+
+input, button, output {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  font: inherit;
+}

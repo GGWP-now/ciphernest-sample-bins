@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="WinUIApp.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:WinUIApp"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="C++/WinUI 3 Victim">
+
+    <Grid Padding="24" RowSpacing="12" ColumnSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="C++/WinUI 3 Victim Sample"
+                   Style="{StaticResource TitleTextBlockStyle}"/>
+
+        <TextBlock Grid.Row="1"
+                   Text="Native C++/WinRT app built against Windows App SDK 2.0. Demonstrates XAML controls, event handlers, and DispatcherQueue marshalling from a background thread."
+                   TextWrapping="Wrap"
+                   Style="{StaticResource BodyTextBlockStyle}"
+                   Opacity="0.85"/>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
+            <TextBox x:Name="InputBox"
+                     PlaceholderText="Type something..."
+                     Width="280"/>
+            <Button x:Name="AddButton"
+                    Content="Add"
+                    Style="{StaticResource AccentButtonStyle}"
+                    Click="OnAddClick"/>
+            <Button x:Name="ClearButton"
+                    Content="Clear"
+                    Click="OnClearClick"/>
+            <Button x:Name="WorkButton"
+                    Content="Run async work"
+                    Click="OnAsyncClick"/>
+        </StackPanel>
+
+        <Grid Grid.Row="3" RowSpacing="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Items" Style="{StaticResource SubtitleTextBlockStyle}"/>
+            <ListView Grid.Row="1" x:Name="ItemList" SelectionMode="Single"
+                      BorderThickness="1"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      CornerRadius="6"/>
+            <InfoBar Grid.Row="2" x:Name="Status"
+                     IsOpen="True"
+                     Severity="Informational"
+                     Title="Ready"
+                     Message="Click Add to append, or 'Run async work' to test the dispatcher."/>
+        </Grid>
+    </Grid>
+</Window>

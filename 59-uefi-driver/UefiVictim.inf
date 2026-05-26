@@ -1,0 +1,21 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = UefiVictim
+  FILE_GUID                      = 5F60C5E2-A0C5-4C8B-8F54-90E4AFD27101
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = UefiVictimEntryPoint
+
+[Sources]
+  UefiVictim.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Depex]
+  TRUE

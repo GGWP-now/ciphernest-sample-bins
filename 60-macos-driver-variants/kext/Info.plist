@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>local.protector.victims.macos.kext</string>
+  <key>CFBundleName</key>
+  <string>MacKextVictim</string>
+  <key>CFBundlePackageType</key>
+  <string>KEXT</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+</dict>
+</plist>

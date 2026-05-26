@@ -1,0 +1,4 @@
+#include "resource.h"
+
+// Common Controls v6 activation via pragma — avoids duplicate manifest
+// when the linker also embeds a default manifest.

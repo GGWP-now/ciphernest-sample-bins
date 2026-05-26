@@ -1,0 +1,2 @@
+#include <windows.h>
+// Manifest is embedded via pragma in main.cpp to avoid linker duplicate.
