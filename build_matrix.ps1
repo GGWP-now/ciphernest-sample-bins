@@ -1978,6 +1978,25 @@ function Build-LangTarget {
          $outBase = Join-Path $outSub 'kotlin_cli'   # kotlinc-native appends .exe
          Show-LangHeader $TargetId $TargetDir 'Kotlin/Native' $Config
          New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         # kotlinc-native's compiler JVM reserves a ~3 GB heap, so it needs a
+         # 64-bit JDK. If JAVA_HOME is unset/32-bit, find a 64-bit JDK (scoop).
+         $javaHome = $env:JAVA_HOME
+         $haveJava = $false
+         if ($javaHome -and (Test-Path (Join-Path $javaHome 'bin\java.exe'))) {
+             $jp = Invoke-LangTool @((Join-Path $javaHome 'bin\java.exe'), '-XshowSettings:properties', '-version')
+             $haveJava = (($jp.Output -join "`n") -match 'os\.arch.*(amd64|x86_64|aarch64)')
+         }
+         if (-not $haveJava) {
+             $jdk64 = Get-ChildItem -Path "$env:USERPROFILE\scoop\apps" -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -match 'jdk|temurin|openjdk|zulu|liberica' } |
+                      ForEach-Object { Join-Path $_.FullName 'current' } |
+                      Where-Object { Test-Path (Join-Path $_ 'bin\java.exe') } | Select-Object -First 1
+             if (-not $jdk64) {
+                 return Show-LangSkip $TargetId $TargetDir 'Kotlin/Native' $Config 'needs a 64-bit JDK (set JAVA_HOME)'
+             }
+             $env:JAVA_HOME = $jdk64
+             $env:PATH = (Join-Path $jdk64 'bin') + ';' + $env:PATH
+         }
          Write-Host "  [kotlinc-native] building (slow)... " -ForegroundColor White -NoNewline
          $r = Invoke-LangTool @($kn.Source, (Join-Path $srcDir 'main.kt'), $opt, '-o', $outBase) $srcDir
          if ($r.ExitCode -ne 0 -or -not (Test-Path "$outBase.exe")) {
