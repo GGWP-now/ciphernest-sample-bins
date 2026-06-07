@@ -12,7 +12,11 @@ cmake/*
 **/dist/*
 **/target/*
 **/.zig-cache/*
+**/.dart_tool/*
+**/nimcache/*
+**/_build/*
 *.obj
+*.c.gen
 *.res
 *.local
 *.exp

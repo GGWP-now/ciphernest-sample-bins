@@ -340,6 +340,21 @@ $TargetDirs = [ordered]@{
     '64' = '64-macos-runtime-module'
     '65' = '65-dotnet-il-runtime-modules'
     '66' = '66-driver-runtime-module'
+    '67' = '67-freepascal-cli'
+    '68' = '68-ada-cli'
+    '69' = '69-nim-cli'
+    '70' = '70-v-cli'
+    '71' = '71-swift-cli'
+    '72' = '72-kotlin-native-cli'
+    '73' = '73-scala-native-cli'
+    '74' = '74-haskell-cli'
+    '75' = '75-dart-cli'
+    '76' = '76-julia-cli'
+    '77' = '77-cython-cli'
+    '78' = '78-jsts-cli'
+    '79' = '79-perl-cli'
+    '80' = '80-lua-cli'
+    '81' = '81-elixir-cli'
 }
 
 # ── Which targets are .NET (use dotnet build instead of cmake) ──────────────
@@ -368,6 +383,15 @@ $PlatformTargets = [System.Collections.Generic.HashSet[string]]@(
 
 $LlvmLitTargets = [System.Collections.Generic.HashSet[string]]@(
     '42'
+)
+
+# ── Additional-language CLI victims (Free Pascal, Ada, Nim, V, Swift, Kotlin/
+#    Native, Scala Native, Haskell, Dart, Julia, Cython, JS/TS, Perl, Lua,
+#    Elixir). Each builds an exe/script and skips gracefully when its toolchain
+#    is not installed. ──────────────────────────────────────────────────────
+$LangTargets = [System.Collections.Generic.HashSet[string]]@(
+    '67', '68', '69', '70', '71', '72', '73', '74',
+    '75', '76', '77', '78', '79', '80', '81'
 )
 
 $ScriptTargets = [System.Collections.Generic.HashSet[string]]@(
@@ -1801,6 +1825,400 @@ function Build-LlvmLitTarget {
  return $true
 }
 
+# ── Additional-language CLI victims ─────────────────────────────────────────
+function Show-LangHeader {
+    param([string]$TargetId, [string]$TargetDir, [string]$Lang, $Config, [string]$Extra = '')
+    Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host "  TARGET: $TargetId ($TargetDir) [$Lang]" -ForegroundColor Yellow
+    if ($Extra) {
+        Write-Host "  CONFIG: $($Config.Name)  |  $Extra" -ForegroundColor DarkYellow
+    } else {
+        Write-Host "  CONFIG: $($Config.Name)" -ForegroundColor DarkYellow
+    }
+    Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+}
+
+function Show-LangSkip {
+    param([string]$TargetId, [string]$TargetDir, [string]$Lang, $Config, [string]$Reason)
+    Write-Host "`n----------------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host "  TARGET: $TargetId ($TargetDir) [$Lang]" -ForegroundColor Yellow
+    Write-Host "  CONFIG: $($Config.Name)  |  SKIP ($Reason)" -ForegroundColor DarkYellow
+    Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+    return $true
+}
+
+# Run a language toolchain command line through cmd.exe and capture output to
+# files. cmd.exe resolves PATH + .bat/.cmd shims uniformly, and the file
+# redirection in Invoke-NativeCaptured avoids the PS 5.1 trap where a native
+# command's stderr is wrapped as a terminating NativeCommandError.
+function Invoke-LangTool {
+    param([string[]]$CommandLine, [string]$WorkingDirectory = $script:Root)
+    return Invoke-NativeCaptured -FilePath $env:ComSpec -ArgumentList (@('/c') + $CommandLine) -WorkingDirectory $WorkingDirectory
+}
+
+function Build-LangTarget {
+ param($Config, $TargetId, $TargetDir)
+
+ $srcDir = Join-Path $script:Root $TargetDir
+ $outSub = Join-Path $OutDir $Config.Name
+ $arch   = if ($Config.Arch -eq 'x86') { 'x86' } else { 'x64' }
+ $vsCfg  = if ($Config.Name -like '*Debug*') { 'debug' } else { 'release' }
+
+ switch ($TargetId) {
+     '67' {
+         # Free Pascal / Lazarus
+         if (-not (Get-Command fpc -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Free Pascal' $Config 'fpc not installed'
+         }
+         $cpu = if ($arch -eq 'x86') { 'i386' } else { 'x86_64' }
+         $opt = if ($vsCfg -eq 'debug') { '-g' } else { '-O2' }
+         $outFile = Join-Path $outSub 'freepascal_cli.exe'
+         $objDir  = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_fpc"
+         Show-LangHeader $TargetId $TargetDir 'Free Pascal' $Config "CPU: $cpu"
+         New-Item -ItemType Directory -Force -Path $outSub, $objDir | Out-Null
+         Write-Host "  [fpc] building... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('fpc', $opt, "-P$cpu", "-FU$objDir", "-o$outFile", (Join-Path $srcDir 'main.pas')) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '68' {
+         # Ada (GNAT)
+         if (-not (Get-Command gnatmake -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Ada' $Config 'gnatmake not installed'
+         }
+         $opt = if ($vsCfg -eq 'debug') { '-g' } else { '-O2' }
+         $outFile = Join-Path $outSub 'ada_cli.exe'
+         $objDir  = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_gnat"
+         Show-LangHeader $TargetId $TargetDir 'Ada' $Config
+         New-Item -ItemType Directory -Force -Path $outSub, $objDir | Out-Null
+         Write-Host "  [gnatmake] building... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('gnatmake', $opt, '-D', $objDir, (Join-Path $srcDir 'main.adb'), '-o', $outFile) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '69' {
+         # Nim
+         if (-not (Get-Command nim -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Nim' $Config 'nim not installed'
+         }
+         $cpu  = if ($arch -eq 'x86') { 'i386' } else { 'amd64' }
+         $mode = if ($vsCfg -eq 'debug') { '-d:debug' } else { '-d:release' }
+         $outFile = Join-Path $outSub 'nim_cli.exe'
+         $cache   = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_nimcache"
+         Show-LangHeader $TargetId $TargetDir 'Nim' $Config "CPU: $cpu (cc:vcc)"
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         # Use the MSVC backend (cl) rather than Nim's gcc default -- avoids a
+         # mismatch with whatever mingw/ucrt gcc happens to be on PATH.
+         Ensure-VSEnv -Arch $Config.Arch
+         Write-Host "  [nim] building... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('nim', 'c', '--cc:vcc', $mode, "--cpu:$cpu", '--nimcache:' + $cache, '--out:' + $outFile, (Join-Path $srcDir 'main.nim')) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '70' {
+         # V
+         if (-not (Get-Command v -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'V' $Config 'v not installed'
+         }
+         $outFile = Join-Path $outSub 'v_cli.exe'
+         # Default (bundled tcc) backend -- avoids requiring an external gcc/clang
+         # that V's -prod mode shells out to.
+         $vArgs   = New-Object System.Collections.Generic.List[string]
+         if ($arch -eq 'x86') { $vArgs.Add('-m32') }
+         $vArgs.AddRange([string[]]@('-o', $outFile, (Join-Path $srcDir 'main.v')))
+         Show-LangHeader $TargetId $TargetDir 'V' $Config "ARCH: $arch"
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Write-Host "  [v] building... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool (@('v') + $vArgs.ToArray()) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '71' {
+         # Swift
+         if (-not (Get-Command swiftc -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Swift' $Config 'swiftc not installed'
+         }
+         $opt = if ($vsCfg -eq 'debug') { '-Onone' } else { '-O' }
+         $outFile = Join-Path $outSub 'swift_cli.exe'
+         Show-LangHeader $TargetId $TargetDir 'Swift' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Write-Host "  [swiftc] building... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('swiftc', $opt, (Join-Path $srcDir 'main.swift'), '-o', $outFile) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '72' {
+         # Kotlin/Native
+         $kn = Get-Command kotlinc-native -ErrorAction SilentlyContinue
+         if (-not $kn) { $kn = Get-Command kotlinc-native.bat -ErrorAction SilentlyContinue }
+         if (-not $kn) {
+             return Show-LangSkip $TargetId $TargetDir 'Kotlin/Native' $Config 'kotlinc-native not installed'
+         }
+         $opt = if ($vsCfg -eq 'debug') { '-g' } else { '-opt' }
+         $outBase = Join-Path $outSub 'kotlin_cli'   # kotlinc-native appends .exe
+         Show-LangHeader $TargetId $TargetDir 'Kotlin/Native' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Write-Host "  [kotlinc-native] building (slow)... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @($kn.Source, (Join-Path $srcDir 'main.kt'), $opt, '-o', $outBase) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path "$outBase.exe")) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '73' {
+         # Scala Native (sbt)
+         if (-not (Get-Command sbt -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Scala Native' $Config 'sbt not installed'
+         }
+         $outFile = Join-Path $outSub 'scala_native_cli.exe'
+         Show-LangHeader $TargetId $TargetDir 'Scala Native' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Write-Host "  [sbt] nativeLink (slow)... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('sbt', '--batch', 'nativeLink') $srcDir
+         # scala-native 0.5 emits target\scala-<ver>\<project>.exe (plus a copy
+         # under native\). Take the top-level one, skipping the native\ duplicate.
+         $built = Get-ChildItem -Path (Join-Path $srcDir 'target') -Recurse -Include '*.exe', 'scala-native-cli-out' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.DirectoryName -notmatch '\\native(\\|$)' } | Select-Object -First 1
+         if ($r.ExitCode -ne 0 -or -not $built) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Copy-Item $built.FullName $outFile -Force
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '74' {
+         # Haskell (GHC)
+         if (-not (Get-Command ghc -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Haskell' $Config 'ghc not installed'
+         }
+         $opt = if ($vsCfg -eq 'debug') { '-O0' } else { '-O2' }
+         $outFile = Join-Path $outSub 'haskell_cli.exe'
+         $objDir  = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_ghc"
+         Show-LangHeader $TargetId $TargetDir 'Haskell' $Config
+         New-Item -ItemType Directory -Force -Path $outSub, $objDir | Out-Null
+         Write-Host "  [ghc] building... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('ghc', $opt, '-outputdir', $objDir, (Join-Path $srcDir 'main.hs'), '-o', $outFile) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '75' {
+         # Dart
+         if (-not (Get-Command dart -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Dart' $Config 'dart not installed'
+         }
+         $outFile = Join-Path $outSub 'dart_cli.exe'
+         Show-LangHeader $TargetId $TargetDir 'Dart' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Write-Host "  [dart] compiling... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('dart', 'compile', 'exe', (Join-Path $srcDir 'main.dart'), '-o', $outFile) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '76' {
+         # Julia (script victim)
+         $outFile = Join-Path $outSub 'julia_cli.jl'
+         Show-LangHeader $TargetId $TargetDir 'Julia' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Copy-Item (Join-Path $srcDir 'main.jl') $outFile -Force
+         if (Get-Command julia -ErrorAction SilentlyContinue) {
+             Write-Host "  [julia] smoke run... " -ForegroundColor White -NoNewline
+             $r = Invoke-LangTool @('julia', '--startup-file=no', $outFile) $outSub
+             if ($r.ExitCode -ne 0) { Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red; Write-Host ($r.Output -join "`n"); return $false }
+             Write-Host "OK" -ForegroundColor Green
+         } else {
+             Write-Host "  [julia] interpreter absent -- packaged script only" -ForegroundColor DarkYellow
+         }
+     }
+     '77' {
+         # Cython (--embed -> C -> native exe via MSVC + CPython)
+         if (-not (Get-Command cython -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Cython' $Config 'cython not installed'
+         }
+         $py = Get-Command python -ErrorAction SilentlyContinue
+         if (-not $py) {
+             return Show-LangSkip $TargetId $TargetDir 'Cython' $Config 'python not installed'
+         }
+         Ensure-VSEnv -Arch $Config.Arch
+         if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Cython' $Config 'MSVC cl not available'
+         }
+         $pyInc = (& $py.Source -c "import sysconfig; print(sysconfig.get_path('include'))").Trim()
+         $pyLib = (& $py.Source -c "import sysconfig,sys,os; print(os.path.join(sys.prefix,'libs'))").Trim()
+         $buildDir = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_cython"
+         $cFile   = Join-Path $buildDir 'main.c'
+         $outFile = Join-Path $outSub 'cython_cli.exe'
+         Show-LangHeader $TargetId $TargetDir 'Cython' $Config "PY: $pyInc"
+         New-Item -ItemType Directory -Force -Path $outSub, $buildDir | Out-Null
+         Write-Host "  [cython] transpile + cl... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('cython', '--embed', '-3', (Join-Path $srcDir 'main.pyx'), '-o', $cFile) $srcDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $cFile)) {
+             Write-Host "FAILED (cython exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         $clOpt = if ($vsCfg -eq 'debug') { '/Od' } else { '/O2' }
+         $r = Invoke-LangTool @('cl', '/nologo', $clOpt, '/MD', "/I$pyInc", $cFile, "/Fe:$outFile", "/Fo:$buildDir\", '/link', "/LIBPATH:$pyLib", "/IMPLIB:$buildDir\cython_cli.lib") $buildDir
+         if ($r.ExitCode -ne 0 -or -not (Test-Path $outFile)) {
+             Write-Host "FAILED (cl exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '78' {
+         # JS/TS -> tsc -> Node single executable application (SEA)
+         $nodeExe = Get-Command node -ErrorAction SilentlyContinue
+         $npmExe  = Get-Command npm -ErrorAction SilentlyContinue
+         $npxExe  = Get-Command npx -ErrorAction SilentlyContinue
+         if (-not $nodeExe -or -not $npmExe -or -not $npxExe) {
+             return Show-LangSkip $TargetId $TargetDir 'JS/TS' $Config 'node/npm/npx not installed'
+         }
+         if ($arch -eq 'x86') {
+             return Show-LangSkip $TargetId $TargetDir 'JS/TS' $Config 'x86 SEA needs a dedicated node-x86 runtime'
+         }
+         # npm/npx are .cmd shims (Start-Process cannot launch them), so route
+         # them through cmd.exe; node.exe is a real Win32 image. Both go through
+         # Invoke-NativeCaptured, which redirects to files -- never use 2>&1 on a
+         # native command in PS 5.1 (it wraps stderr lines as NativeCommandError).
+         $shell   = $env:ComSpec
+         $outFile = Join-Path $outSub 'jsts_cli.exe'
+         $seaDir  = Join-Path $script:Root "build\$($TargetId)_$($Config.Name)_jsts_sea"
+         Show-LangHeader $TargetId $TargetDir 'JS/TS' $Config 'TypeScript -> Node SEA'
+         New-Item -ItemType Directory -Force -Path $outSub, $seaDir | Out-Null
+         Write-Host "  [npm] install + tsc... " -ForegroundColor White -NoNewline
+         $null = Invoke-NativeCaptured -FilePath $shell -ArgumentList @('/c', 'npm', 'install', '--silent') -WorkingDirectory $srcDir
+         $tscRun = Invoke-NativeCaptured -FilePath $shell -ArgumentList @('/c', 'npx', '--yes', 'tsc') -WorkingDirectory $srcDir
+         $mainJs = Join-Path $srcDir 'dist\main.js'
+         if (-not (Test-Path $mainJs)) {
+             Write-Host "FAILED (tsc produced no dist/main.js)" -ForegroundColor Red
+             Write-Host ($tscRun.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+         $seaBlob = Join-Path $seaDir 'sea-prep.blob'
+         $seaCfg  = Join-Path $seaDir 'sea-config.json'
+         [pscustomobject]@{ main = $mainJs; output = $seaBlob; disableExperimentalSEAWarning = $true } |
+             ConvertTo-Json | Set-Content -LiteralPath $seaCfg -Encoding ASCII
+         Write-Host "  [node] SEA blob + inject... " -ForegroundColor White -NoNewline
+         $blobRun = Invoke-NativeCaptured -FilePath $nodeExe.Source -ArgumentList @('--experimental-sea-config', $seaCfg) -WorkingDirectory $srcDir
+         if ($blobRun.ExitCode -ne 0 -or -not (Test-Path $seaBlob)) {
+             Write-Host "FAILED (no SEA blob)" -ForegroundColor Red
+             Write-Host ($blobRun.Output -join "`n")
+             return $false
+         }
+         Copy-Item -LiteralPath $nodeExe.Source -Destination $outFile -Force
+         $inject = Invoke-NativeCaptured -FilePath $shell -ArgumentList @('/c', 'npx', '--yes', 'postject', $outFile, 'NODE_SEA_BLOB', $seaBlob, '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2', '--overwrite') -WorkingDirectory $srcDir
+         if ($inject.ExitCode -ne 0) {
+             Write-Host "FAILED (postject exit $($inject.ExitCode))" -ForegroundColor Red
+             Write-Host ($inject.Output -join "`n")
+             return $false
+         }
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '79' {
+         # Perl (script victim)
+         if (-not (Get-Command perl -ErrorAction SilentlyContinue)) {
+             return Show-LangSkip $TargetId $TargetDir 'Perl' $Config 'perl not installed'
+         }
+         $outFile = Join-Path $outSub 'perl_cli.pl'
+         Show-LangHeader $TargetId $TargetDir 'Perl' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Write-Host "  [perl] syntax check... " -ForegroundColor White -NoNewline
+         $r = Invoke-LangTool @('perl', '-c', (Join-Path $srcDir 'main.pl')) $srcDir
+         if ($r.ExitCode -ne 0) {
+             Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red
+             Write-Host ($r.Output -join "`n")
+             return $false
+         }
+         Copy-Item (Join-Path $srcDir 'main.pl') $outFile -Force
+         Write-Host "OK" -ForegroundColor Green
+     }
+     '80' {
+         # Lua (script victim; precompiled chunk when luac is present)
+         $outFile = Join-Path $outSub 'lua_cli.lua'
+         Show-LangHeader $TargetId $TargetDir 'Lua' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Copy-Item (Join-Path $srcDir 'main.lua') $outFile -Force
+         $luac = Get-Command luac -ErrorAction SilentlyContinue
+         if ($luac) {
+             Write-Host "  [luac] compiling chunk... " -ForegroundColor White -NoNewline
+             $r = Invoke-LangTool @('luac', '-o', (Join-Path $outSub 'lua_cli.luac'), (Join-Path $srcDir 'main.lua')) $srcDir
+             if ($r.ExitCode -ne 0) { Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red; Write-Host ($r.Output -join "`n"); return $false }
+             Write-Host "OK" -ForegroundColor Green
+         } else {
+             Write-Host "  [lua] luac absent -- packaged script only" -ForegroundColor DarkYellow
+         }
+     }
+     '81' {
+         # Elixir / Erlang (BEAM script victim)
+         $outFile = Join-Path $outSub 'elixir_cli.exs'
+         Show-LangHeader $TargetId $TargetDir 'Elixir' $Config
+         New-Item -ItemType Directory -Force -Path $outSub | Out-Null
+         Copy-Item (Join-Path $srcDir 'main.exs') $outFile -Force
+         if (Get-Command elixir -ErrorAction SilentlyContinue) {
+             Write-Host "  [elixir] smoke run... " -ForegroundColor White -NoNewline
+             $r = Invoke-LangTool @('elixir', $outFile) $outSub
+             if ($r.ExitCode -ne 0) { Write-Host "FAILED (exit $($r.ExitCode))" -ForegroundColor Red; Write-Host ($r.Output -join "`n"); return $false }
+             Write-Host "OK" -ForegroundColor Green
+         } else {
+             Write-Host "  [elixir] runtime absent -- packaged script only" -ForegroundColor DarkYellow
+         }
+     }
+     default {
+         Write-Host "  [WARN] unknown language target $TargetId" -ForegroundColor Red
+         return $false
+     }
+ }
+
+ $artName = @{
+     '67' = 'freepascal_cli'; '68' = 'ada_cli';   '69' = 'nim_cli';   '70' = 'v_cli'
+     '71' = 'swift_cli';      '72' = 'kotlin_cli'; '73' = 'scala_native_cli'
+     '74' = 'haskell_cli';    '75' = 'dart_cli';   '76' = 'julia_cli'; '77' = 'cython_cli'
+     '78' = 'jsts_cli';       '79' = 'perl_cli';   '80' = 'lua_cli';   '81' = 'elixir_cli'
+ }[$TargetId]
+ $artifacts = Get-ChildItem -Path $outSub -ErrorAction SilentlyContinue |
+              Where-Object { $_.BaseName -eq $artName }
+ if ($artifacts) {
+     Write-Host "  [OK]   artifacts:" -ForegroundColor Green
+     foreach ($a in $artifacts) {
+         $size = '{0,8:N0} KB' -f ($a.Length / 1KB)
+         Write-Host "         $($a.Name)  $size" -ForegroundColor Green
+     }
+ }
+ return $true
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 $startTime = Get-Date
 $total = 0
@@ -1828,7 +2246,7 @@ $succeeded = 0
 $failed    = 0
 
 # Split targets into C++, MSBuild (vcxproj), .NET, native toolchains, GUI app packagers, platform-native targets, scripted targets, and LLVM LIT packs
-$cppTargets     = $selectedTargets | Where-Object { -not $DotNetTargets.Contains($_.Key) -and -not $MSBuildTargets.Contains($_.Key) -and -not $NativeTargets.Contains($_.Key) -and -not $GuiAppTargets.Contains($_.Key) -and -not $PlatformTargets.Contains($_.Key) -and -not $ScriptTargets.Contains($_.Key) -and -not $LlvmLitTargets.Contains($_.Key) }
+$cppTargets     = $selectedTargets | Where-Object { -not $DotNetTargets.Contains($_.Key) -and -not $MSBuildTargets.Contains($_.Key) -and -not $NativeTargets.Contains($_.Key) -and -not $GuiAppTargets.Contains($_.Key) -and -not $PlatformTargets.Contains($_.Key) -and -not $ScriptTargets.Contains($_.Key) -and -not $LlvmLitTargets.Contains($_.Key) -and -not $LangTargets.Contains($_.Key) }
 $msbuildTargets = $selectedTargets | Where-Object { $MSBuildTargets.Contains($_.Key) }
 $dotnetTargets  = $selectedTargets | Where-Object { $DotNetTargets.Contains($_.Key) }
 $nativeTargets  = $selectedTargets | Where-Object { $NativeTargets.Contains($_.Key) }
@@ -1836,6 +2254,7 @@ $guiAppTargets  = $selectedTargets | Where-Object { $GuiAppTargets.Contains($_.K
 $platformTargets = $selectedTargets | Where-Object { $PlatformTargets.Contains($_.Key) }
 $scriptTargets = $selectedTargets | Where-Object { $ScriptTargets.Contains($_.Key) }
 $llvmLitTargets = $selectedTargets | Where-Object { $LlvmLitTargets.Contains($_.Key) }
+$langTargets    = $selectedTargets | Where-Object { $LangTargets.Contains($_.Key) }
 # ── C++ targets (need vcvars per arch) ───────────────────────────────────────
 if ($cppTargets) {
     foreach ($cfg in $selectedConfigs) {
@@ -1947,6 +2366,20 @@ if ($llvmLitTargets) {
         }
     }
 }
+# Additional-language CLI victims (each guards on its own toolchain)
+if ($langTargets) {
+    Write-Host "`n>>> Building additional-language CLI targets..." -ForegroundColor Blue
+    foreach ($cfg in $selectedConfigs) {
+        foreach ($tgt in $langTargets) {
+            if (-not (Test-ConfigAppliesToTarget -Config $cfg -TargetId $tgt.Key)) {
+                continue
+            }
+            $ok = Build-LangTarget -Config $cfg -TargetId $tgt.Key -TargetDir $tgt.Value
+            if ($ok) { $succeeded++ } else { $failed++ }
+        }
+    }
+}
+
 $elapsed = (Get-Date) - $startTime
 Write-Host "`n================================================================" -ForegroundColor Cyan
 Write-Host ("  BUILD COMPLETE  --  {0} succeeded, {1} failed, {2} total" -f $succeeded, $failed, $total) -ForegroundColor $(if ($failed -gt 0) { 'Red' } else { 'Green' })

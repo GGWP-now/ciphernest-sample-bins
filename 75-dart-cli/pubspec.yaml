@@ -1,0 +1,7 @@
+name: dart_cli
+description: Dart CLI victim -- prime sieve + Fibonacci
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.0.0
